@@ -2,7 +2,7 @@ This work is licensed under [Anti-Capitalist Software License v1.4](https://anti
 
 ANTI-CAPITALIST SOFTWARE LICENSE (v 1.4)
 
-Copyright © [year] [copyright holders]
+Copyright © 2024 Judebert.com
 
 This is anti-capitalist software, released for free use by individuals and organizations that do not operate by capitalist principles.
 
