@@ -1,0 +1,147 @@
+#!python3
+import argparse, subprocess, sys, json, random, urllib.parse
+from pathlib import Path
+
+parser = argparse.ArgumentParser(
+        description = 'Rates, randomizes, and activates screen savers. In Sonoma, only supports displaying on all Spaces.',
+        )
+parser.add_argument('command',
+        choices=['a', 'activate', 'show', 'info', 'change', 'next', 'like', 'dislike', 'love', 'hate', 'weight'],
+        nargs='?',
+        help='What to do. "a" or "activate" starts the screensaver. "show" shows the weights and usages of the current screensaver. "change" and "next" shuffle to a new screensaver. "like" and "dislike" change the weight of the current screensaver by 1 (or the amount in "-d". "love" and "hate" set the max and min weight, respectively. "weight" sets the weight to the "--delta" value directly.',
+        )
+parser.add_argument('-d', '--delta',
+        type=int,
+        choices=range(0,10),
+        default=1,
+        help="The amount to like, dislike, or weight the current screensaver. 0 means the screensaver will never be chosen. The default range is 3 (the middle of 5 stars), although weights up to 10 are allowed."
+        )
+# TODO: get the OS version automatically
+parser.add_argument('-m', '--macos',
+        type=str,
+        choices=["Sierra", "Sonoma"],
+        default="Sonoma",
+        help="The OS version, either Sierra (the first version the old methods worked with) or Sonoma (the new plist format and location)"
+        )
+args = parser.parse_args()
+
+if args.command is None or args.command == 'activate':
+    if args.macos == "Sierra":
+        subprocess.run(["/System/Library/CoreServices/ScreenSaverEngine.app/Contents/MacOS/ScreenSaverEngine"], capture_output=False)
+        # Alternative through AppleScript
+        #subprocess.run(["osascript", "-e", 'tell application "System Events"', "-e", "start current screen saver", "-e", "end tell"], capture_output=False)
+    else:
+        # Use Sonoma activation method
+        subprocess.run(["osascript", "-e", "activate application \"ScreenSaverEngine\""], capture_output=False)
+        # Alternative verbose version
+        #subprocess.run(["osascript", "-e", "tell application \"ScreenSaverEngine\"", "-e", "activate", "-e", "end tell"], capture_output=False)
+    exit(0)
+
+# Read weights and usages
+userprefsPath = Path.home() / '.config/screensavers/prefs.json';
+try:
+    with open(userprefsPath, 'r') as prefsFile:
+        userprefs = json.load(prefsFile)
+except FileNotFoundError:
+    with open(userprefsPath, 'w') as newPrefsFile:
+        json.dump({}, newPrefsFile)
+        userprefs = {}
+if ('weights' not in userprefs):
+    userprefs['weights'] = {}
+if ('usages' not in userprefs):
+    userprefs['usages'] = {}
+if ('history' not in userprefs):
+    userprefs['history'] = []
+
+# Cache the current system screensaver prefs
+cachedFile = Path.home()/".config/screensavers/cache.plist"
+subprocess.run(["defaults", "-currentHost", "export", "com.apple.screensaver", cachedFile])
+subprocess.run(["plutil", "-convert", "json", cachedFile])
+
+# Read the current ss prefs
+with open(cachedFile, 'r') as ssprefsFile:
+    ssprefs = json.load(ssprefsFile)
+currentPath = ssprefs['moduleDict']['path'] # There's also a moduleName, but we nobody cares
+if (currentPath not in userprefs['weights']):
+    userprefs['weights'][currentPath] = 3
+if (currentPath not in userprefs['usages']):
+    userprefs['usages'][currentPath] = 0
+
+# Show info
+if (args.command == 'show' or args.command == 'info'):
+    print('%s usage %s/%s' % (currentPath, userprefs['usages'][currentPath], userprefs['weights'][currentPath]))
+    history = userprefs.get('history', [currentPath])
+    first = max(0, len(history) - 4)
+    print('Recent: %s' % history[first:])
+    exit(0)
+
+# Increment and change the userpref weight of the current screensaver
+if (args.command == 'like' or args.command == 'dislike'):
+    weight = userprefs['weights'][currentPath]
+    delta = args.delta
+    if (args.command == 'dislike'):
+        delta = -delta
+    userprefs['weights'][currentPath] = min(10, max(0, userprefs['weights'][currentPath] + delta))
+    with open(userprefsPath, 'w') as prefsFile:
+        json.dump(userprefs, prefsFile)
+    print('Updated %s by %s to %s' % (currentPath, delta, userprefs['weights'][currentPath]))
+    exit(0)
+
+# Directly set a userpref weight for the current screensaver
+if (args.command == 'weight' or args.command == 'love' or args.command == 'hate'):
+    delta = args.delta
+    if (args.command == 'love'):
+        delta = 5
+    if (args.command == 'hate'):
+        delta = 0
+    userprefs['weights'][currentPath] = min(10, max(0, delta))
+    with open(userprefsPath, 'w') as prefsFile:
+        json.dump(userprefs, prefsFile)
+    print('Set weight for %s to %s' % (currentPath, delta))
+    exit(0)
+
+# Choose a new random screensaver
+if (args.command == 'change' or args.command == 'next'):
+    # Update weights and usages (first time, or when there are updates)
+    ssPaths = [
+        Path('/Library/Screen Savers/'),
+        Path('/System/Library/Screen Savers/'),
+        Path.home()/'Library/Screen Savers/'
+    ]
+    userprefs['weights'] = { path:userprefs['weights'].get(path, 3)
+            for path in [str(flat)
+                for glob in [list(ssPath.glob('**/*.saver')) for ssPath in ssPaths] for flat in glob] }
+
+    choices = [path
+        for path in userprefs['weights'].keys()
+        if userprefs['usages'].get(path, 0) < userprefs['weights'][path]]
+    weights = [userprefs['weights'][path] - userprefs['usages'].get(path, 0) for path in choices]
+    choice = random.choices(choices, weights=weights, k=1)[0]
+    if args.macos == "Sierra":
+        # Pre-Sonoma (at least to Sierra, when I first wrote this script), config is stored in a system default
+        subprocess.run(["defaults", "-currentHost", "write", "com.apple.screensaver", "moduleDict", "-dict-add", "path", choice])
+        subprocess.run(["defaults", "-currentHost", "read", "com.apple.screensaver"], capture_output=True)
+    else:
+        # `defaults write && defaults read` no longer works on Sonoma.
+        # The screensaver config has moved to ~/Library/Application Support/com.apple.wallpaper/Store/Index.plist
+        # The plist structure is much more complicated; it stores a binary-encoded plist in the key:
+        #     AllSpacesAndDisplays:Idle:Content:Choices:0:Configuration
+        # You can use /usr/libexec/PlistBuddy to print it.
+        # There doesn't seem to be a way to reload the config besides `killall WallpaperAgent`, which flashes the wallpaper.
+        # Fortunately, the value doesn't need to be SET in binary format; XML format works fine.
+        # TODO: read and store screensaver-specific options
+        xmlPlist = "<dict><key>module</key><dict><key>relative</key><string>{path}</string></dict></dict>".format(path=urllib.parse.quote(choice))
+        subprocess.run(["/usr/libexec/PlistBuddy", Path.home()/"Library/Application Support/com.apple.wallpaper/Store/Index.plist",
+            "-c", "set AllSpacesAndDisplays:Idle:Content:Choices:0:Configuration {}".format(xmlPlist)], capture_output=False)
+        subprocess.run(["killall", "WallpaperAgent"], capture_output=False)
+
+    # update user prefs weights and history
+    userprefs['usages'][choice] = userprefs['usages'].get(choice, 0) + 1
+    userprefs['history'] = userprefs.get('history', []) + [choice]
+    with open(userprefsPath, 'w') as prefsFile:
+        json.dump(userprefs, prefsFile)
+    print("Chose %s (%s of %s usages)" % (choice, userprefs['usages'][choice], userprefs['weights'][choice]))
+    exit(0)
+
+print('Unhandled command %s!' % args.command)
+exit(-1)
