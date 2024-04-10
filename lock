@@ -53,15 +53,28 @@ if ('usages' not in userprefs):
 if ('history' not in userprefs):
     userprefs['history'] = []
 
-# Cache the current system screensaver prefs
+# Find the current screensaver, even if the user has changed it manually
 cachedFile = Path.home()/".config/screensavers/cache.plist"
-subprocess.run(["defaults", "-currentHost", "export", "com.apple.screensaver", cachedFile])
-subprocess.run(["plutil", "-convert", "json", cachedFile])
+if args.macos == "Sierra":
+    # Pre-Sonoma (at least to Sierra, when I first wrote this script), config is stored in a system default
+    subprocess.run(["defaults", "-currentHost", "export", "com.apple.screensaver", cachedFile])
+    # There's also a moduleDict:moduleName and moduleDict:type, but nobody cares
+    currentPath = subprocess.run(["/usr/libexec/PlistBuddy", cachedFile, "-c", "print moduleDict:path"],
+        capture_output=True, text=True).stdout.strip()
+else:
+    # Sonoma and afterwards, config has moved to ~/Library/Application Support/com.apple.wallpaper/Store/Index.plist
+    # The key AllSpacesAndDisplays:Idle:Content:Choices:0:Configuration holds *another* plist, encoded in binary by
+    # default but in XML if you've used the lock script before, and *that* plist has {module: {relative: "the path"}}
+    with open(cachedFile, "w") as cached:
+        subprocess.run([
+            "/usr/libexec/PlistBuddy", Path.home()/"Library/Application Support/com.apple.wallpaper/Store/Index.plist",
+            "-c", "print AllSpacesAndDisplays:Idle:Content:Choices:0:Configuration"], stdout = cached, text=True);
+    currentPath = subprocess.run(["/usr/libexec/PlistBuddy", cachedFile,
+        "-c", "print module:relative"
+        ], capture_output=True, text=True).stdout.strip()
+    currentPath=urllib.parse.unquote(currentPath)
 
 # Read the current ss prefs
-with open(cachedFile, 'r') as ssprefsFile:
-    ssprefs = json.load(ssprefsFile)
-currentPath = ssprefs['moduleDict']['path'] # There's also a moduleName, but we nobody cares
 if (currentPath not in userprefs['weights']):
     userprefs['weights'][currentPath] = 3
 if (currentPath not in userprefs['usages']):
